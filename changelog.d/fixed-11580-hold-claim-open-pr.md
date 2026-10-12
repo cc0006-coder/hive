@@ -1,0 +1,1 @@
+- An issue claim is now held past its marker/assignee expiry while an open PR (closing or `Refs #N`) references the issue, so a second agent is no longer dispatched alongside an in-flight PR ([#11580](https://github.com/hivecommons/hive/issues/11580)). Merged-PR claims were already retained for 30 days by the settled-claim carry-forward.

@@ -194,3 +194,36 @@ func TestResolve(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveHeld(t *testing.T) {
+	now := started.Add(time.Hour)
+	lapsed := Marker("marker-holder", started.Add(-2*DefaultTTL), started.Add(-DefaultTTL))
+	tests := []struct {
+		name      string
+		bodies    []string
+		assignees []string
+		updatedAt time.Time
+		openPR    bool
+		wantOK    bool
+		wantWho   string
+	}{
+		{"expired marker released without open PR", []string{lapsed}, nil, started, false, false, ""},
+		{"expired marker held by open PR", []string{lapsed}, nil, started, true, true, "marker-holder"},
+		{"stale assignee held by open PR", nil, []string{"assignee"}, started.Add(-2 * DefaultTTL), true, true, "assignee"},
+		{"no claimant means nothing to hold", nil, nil, started, true, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			claim, ok := ResolveHeld(tt.bodies, tt.assignees, tt.updatedAt, DefaultTTL, now, tt.openPR)
+			if ok != tt.wantOK || claim.Identity != tt.wantWho {
+				t.Fatalf("got ok=%v %+v", ok, claim)
+			}
+			if ok && !claim.Live(now) {
+				t.Fatalf("held claim must be live at now: %+v", claim)
+			}
+		})
+	}
+	if _, ok := ResolveHeld([]string{lapsed}, nil, started, 0, now, true); ok {
+		t.Fatal("zero ttl must not hold a lapsed claim")
+	}
+}

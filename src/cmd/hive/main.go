@@ -9004,6 +9004,10 @@ func installReviewRelaySettings(client *github.Client, cfg *config.Config, logge
 	client.SetIssueClaims(func() (bool, time.Duration) {
 		return cfg.Governor.Claims.Enabled, cfg.Governor.Claims.EffectiveTTL()
 	})
+	client.SetOpenPRLookup(func(repo string, issue int) bool {
+		claim, ok := getClaimLedger(logger).Lookup(repo, issue)
+		return ok && !claim.MergedPR
+	})
 	client.SetReviewCadenceLimits(
 		func() bool { return cfg.Review.CombinedPerspectives },
 		func() int { return cfg.Review.MaxReviewsPerHead },

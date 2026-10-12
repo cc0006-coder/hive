@@ -258,13 +258,27 @@ func FromAssignees(assignees []string, updatedAt time.Time, ttl time.Duration) (
 // expired marker releases the issue rather than falling back to the assignee
 // — the marker is the explicit statement, and it explicitly lapsed.
 func Resolve(bodies []string, assignees []string, updatedAt time.Time, ttl time.Duration, now time.Time) (Claim, bool) {
-	if claim, ok := Latest(bodies, ttl); ok {
-		if claim.Live(now) {
-			return claim, true
-		}
+	return ResolveHeld(bodies, assignees, updatedAt, ttl, now, false)
+}
+
+// ResolveHeld is Resolve for an issue that may have an open PR referencing it
+// (closing or `Refs #N`). While such a PR is open the claimant's work is in
+// flight, so a lapsed claim is held — extended to ttl from now — instead of
+// releasing the issue to a second agent. With no claimant at all there is
+// nothing to hold.
+func ResolveHeld(bodies []string, assignees []string, updatedAt time.Time, ttl time.Duration, now time.Time, openPR bool) (Claim, bool) {
+	claim, found := Latest(bodies, ttl)
+	if !found {
+		claim, found = FromAssignees(assignees, updatedAt, ttl)
+	}
+	if !found {
 		return Claim{}, false
 	}
-	if claim, ok := FromAssignees(assignees, updatedAt, ttl); ok && claim.Live(now) {
+	if claim.Live(now) {
+		return claim, true
+	}
+	if openPR && ttl > 0 {
+		claim.ExpiresAt = now.Add(ttl)
 		return claim, true
 	}
 	return Claim{}, false

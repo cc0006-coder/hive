@@ -44,6 +44,16 @@ func (c *Client) SetIssueClaims(fn func() (enabled bool, ttl time.Duration)) {
 	c.issueClaims = fn
 }
 
+// SetOpenPRLookup installs the predicate reporting whether an open PR
+// references the issue (closing or `Refs #N`); such an issue keeps its claim
+// past the marker's expiry. Nil disables the hold.
+func (c *Client) SetOpenPRLookup(fn func(repo string, issue int) bool) {
+	if c == nil {
+		return
+	}
+	c.openPRLookup = fn
+}
+
 func (c *Client) issueClaimsSetting() (bool, time.Duration) {
 	if c == nil || c.issueClaims == nil {
 		return false, 0
@@ -96,7 +106,7 @@ func (c *Client) issueClaimFor(ctx context.Context, owner, repo string, issue *I
 	entry, hit := c.issueClaimCache[key]
 	c.issueClaimMu.Unlock()
 	if hit && !issue.UpdatedAt.IsZero() && entry.updatedAt.Equal(issue.UpdatedAt) {
-		return resolveCachedClaim(entry, issue, ttl, now)
+		return c.resolveCachedClaim(entry, issue, ttl, now)
 	}
 
 	comments, err := c.listIssueComments(ctx, owner, repo, issue.Number)
@@ -120,22 +130,30 @@ func (c *Client) issueClaimFor(ctx context.Context, owner, repo string, issue *I
 	c.issueClaimCache[key] = entry
 	c.issueClaimMu.Unlock()
 
-	return resolveCachedClaim(entry, issue, ttl, now)
+	return c.resolveCachedClaim(entry, issue, ttl, now)
 }
 
-// resolveCachedClaim applies issueclaim.Resolve's precedence to a cached
-// marker read: a live marker claims; an expired marker releases; no marker
-// falls back to the assignee inference.
-func resolveCachedClaim(entry issueClaimCacheEntry, issue *Issue, ttl time.Duration, now time.Time) (issueclaim.Claim, bool, error) {
+// resolveCachedClaim applies issueclaim.ResolveHeld's precedence to a cached
+// marker read: a live marker claims; an expired marker releases unless an open
+// PR references the issue; no marker falls back to the assignee inference.
+func (c *Client) resolveCachedClaim(entry issueClaimCacheEntry, issue *Issue, ttl time.Duration, now time.Time) (issueclaim.Claim, bool, error) {
+	openPR := c.openPRLookup != nil && c.openPRLookup(issue.Repo, issue.Number)
+	var claim issueclaim.Claim
+	var ok bool
 	if entry.found {
-		entry.claim = issueclaim.ClampToTTL(entry.claim, ttl)
-		if entry.claim.Live(now) {
-			return entry.claim, true, nil
-		}
+		claim = issueclaim.ClampToTTL(entry.claim, ttl)
+		ok = true
+	} else {
+		claim, ok = issueclaim.FromAssignees(issue.Assignees, issue.UpdatedAt, ttl)
+	}
+	if !ok {
 		return issueclaim.Claim{}, false, nil
 	}
-	claim, ok := issueclaim.FromAssignees(issue.Assignees, issue.UpdatedAt, ttl)
-	if ok && claim.Live(now) {
+	if claim.Live(now) {
+		return claim, true, nil
+	}
+	if openPR && ttl > 0 {
+		claim.ExpiresAt = now.Add(ttl)
 		return claim, true, nil
 	}
 	return issueclaim.Claim{}, false, nil

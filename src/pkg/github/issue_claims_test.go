@@ -365,3 +365,31 @@ func TestFilterLiveIssueClaimsAddsDashboardDetail(t *testing.T) {
 		t.Fatalf("claim details = %+v, want claimed bucket naming scanner", details)
 	}
 }
+
+func TestAnnotateIssueClaims_OpenPRHoldsLapsedClaim(t *testing.T) {
+	lapsed := issueclaim.CommentBody("alice", claimNow.Add(-6*time.Hour), claimNow.Add(-time.Hour))
+	tests := []struct {
+		name   string
+		lookup func(string, int) bool
+		want   string
+	}{
+		{"no lookup releases", nil, ""},
+		{"no open PR releases", func(string, int) bool { return false }, ""},
+		{"open PR holds", func(repo string, n int) bool { return repo == "widgets" && n == 7 }, "alice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, _ := claimServer(t, []string{lapsed})
+			c := newTestClient(t, server, "acme", []string{"widgets"})
+			enableClaims(c, 4*time.Hour)
+			c.SetOpenPRLookup(tt.lookup)
+			issues := []Issue{claimIssue()}
+			c.annotateIssueClaims(context.Background(), "acme", "widgets", issues, claimNow)
+			if issues[0].ClaimedBy != tt.want {
+				t.Fatalf("ClaimedBy = %q, want %q", issues[0].ClaimedBy, tt.want)
+			}
+		})
+	}
+	var nilClient *Client
+	nilClient.SetOpenPRLookup(nil)
+}

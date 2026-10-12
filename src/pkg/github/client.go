@@ -150,6 +150,9 @@ type Client struct {
 	// false → no comment is fetched, no Issue carries claim fields. Read live
 	// so a Features-panel toggle applies without a client rebuild.
 	issueClaims func() (enabled bool, ttl time.Duration)
+	// openPRLookup reports whether an open PR references an issue, holding
+	// its claim past expiry (#11580).
+	openPRLookup func(repo string, issue int) bool
 	// mttrIssueCache remembers issue creation times used by the MTTR dashboard
 	// card so the hourly metrics pass does not refetch the same referenced issue
 	// every cycle. Guarded by mttrIssueMu.
