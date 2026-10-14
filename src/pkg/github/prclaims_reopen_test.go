@@ -323,3 +323,41 @@ func TestHandleWebhookEventIssuesReopenedCallsHook(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// hivecommons/hive#9579: same ledger shape as #9945 but the merge is days old
+// and hive/verified-open already landed. The reopen must void the claim just
+// the same, and the verdict label must survive the annotation.
+func TestReconcileReopenedIssuesVoidsOldMergedClaimKeepingVerifiedOpen(t *testing.T) {
+	merged := time.Date(2026, 10, 8, 22, 45, 39, 0, time.UTC)
+	reopened := time.Date(2026, 10, 14, 4, 7, 6, 0, time.UTC)
+	now := reopened.Add(6 * time.Hour)
+	f := &reopenPollFixture{timeline: []map[string]any{
+		reopenTimelineEvent("closed", merged.Format(time.RFC3339), "hive[bot]", "Bot"),
+		reopenTimelineEvent("reopened", reopened.Format(time.RFC3339), "kubestellar-prow[bot]", "Bot"),
+		reopenTimelineEvent("labeled", reopened.Add(17*time.Minute).Format(time.RFC3339), "hive[bot]", "Bot"),
+	}}
+	srv := f.server(t)
+	defer srv.Close()
+	c := newTestClient(t, srv, "o", []string{"r"})
+	ledger := NewClaimLedger("", testLogger())
+	ledger.SetClock(func() time.Time { return now })
+	claim := reopenTestClaim()
+	claim.MergedAt, claim.ObservedAt, claim.FirstObservedAt, claim.CloseOnMergeSettledAt = merged, merged, merged, now.Add(-time.Minute)
+	ledger.Reconcile([]IssueClaim{claim}, true)
+
+	result := reopenPollResult(true, now)
+	result.Issues.Items[0].Labels = []string{"bug", VerifiedOpenLabel, LikelyDoneLabel}
+	if got := ledger.ReconcileReopenedIssues(context.Background(), c, HiveIdentity{AppLogin: "hive[bot]"}, result, testLogger()); got != 1 {
+		t.Fatalf("voided = %d, want 1", got)
+	}
+	if got := FilterClaimedIssues(result, ledger, nil, testLogger()); got != 0 {
+		t.Fatalf("suppressed = %d, want 0", got)
+	}
+	issue := result.Issues.Items[0]
+	if !issueHasLabel(issue.Labels, VerifiedOpenLabel) || issueHasLabel(issue.Labels, LikelyDoneLabel) {
+		t.Fatalf("labels = %v, want verified-open kept and likely-done cleared", issue.Labels)
+	}
+	if issue.ClaimContext == nil || issue.ClaimContext.Decision != ClaimDecisionReopenedAfterMerge || issue.ClaimContext.MergedPR {
+		t.Fatalf("ClaimContext = %+v", issue.ClaimContext)
+	}
+}
