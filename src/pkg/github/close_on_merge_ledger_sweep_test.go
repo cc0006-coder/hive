@@ -14,14 +14,15 @@ import (
 
 // ledgerSweepFixture serves a repo whose issues are all closed except the
 // ones in open, and counts every request by method+path prefix so a test can
-// prove a sweep made no API call for a settled claim.
+// prove a sweep made no API call for a settled claim. The open-issue list
+// (GET /repos/o/r/issues) returns exactly the issues in open (#11538).
 type ledgerSweepFixture struct {
 	t    *testing.T
 	mu   sync.Mutex
 	open map[int]bool
 	hits map[string]int
-	// issueStatus, when non-zero, fails every issue GET with that status.
-	issueStatus int
+	// listStatus, when non-zero, fails the open-issue list with that status.
+	listStatus int
 }
 
 func newLedgerSweepFixture(t *testing.T, open ...int) *ledgerSweepFixture {
@@ -44,6 +45,8 @@ func (f *ledgerSweepFixture) server() *httptest.Server {
 		path := r.URL.Path
 		f.mu.Lock()
 		switch {
+		case r.Method == "GET" && path == "/repos/o/r/issues":
+			f.hits["list_get"]++
 		case r.Method == "GET" && strings.Contains(path, "/pulls/"):
 			f.hits["pull_get"]++
 		case r.Method == "GET" && strings.HasSuffix(path, "/comments"):
@@ -62,6 +65,18 @@ func (f *ledgerSweepFixture) server() *httptest.Server {
 		// issue number so each PR body closes its own issue.
 		n, _ := strconvAtoi(parts5(path))
 		switch {
+		case r.Method == "GET" && path == "/repos/o/r/issues":
+			if f.listStatus != 0 {
+				w.WriteHeader(f.listStatus)
+				return
+			}
+			f.mu.Lock()
+			out := make([]map[string]any, 0, len(f.open))
+			for num := range f.open {
+				out = append(out, map[string]any{"number": num, "state": "open", "body": "body", "labels": []map[string]string{}})
+			}
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(out)
 		case r.Method == "GET" && strings.Contains(path, "/pulls/"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"number": n, "title": "fix", "body": "Fixes #" + parts5(path), "merged": true,
@@ -75,10 +90,6 @@ func (f *ledgerSweepFixture) server() *httptest.Server {
 		case r.Method == "GET" && strings.HasSuffix(path, "/timeline"):
 			_ = json.NewEncoder(w).Encode([]map[string]any{})
 		case r.Method == "GET" && strings.Contains(path, "/issues/"):
-			if f.issueStatus != 0 {
-				w.WriteHeader(f.issueStatus)
-				return
-			}
 			state := "closed"
 			f.mu.Lock()
 			if f.open[n] {
@@ -131,13 +142,18 @@ func TestCloseOnMergeLedgerSweepSettledClaimsSkipAPI(t *testing.T) {
 	opts := CloseOnMergeOptions{Identity: HiveIdentity{AppLogin: "hive[bot]"}, Now: func() time.Time { return now }}
 
 	first := c.CloseOnMergeLedgerSweep(context.Background(), ledger, opts)
-	if len(first.Results) != 3 || first.Marked != 3 || first.SkippedSettled != 0 {
+	// Only the open issue 7 yields a result; the closed claims 8 and 9 are
+	// settled from the open-issue list without a per-claim read (#11538).
+	if len(first.Results) != 1 || first.Results[0].Issue != 7 || first.Results[0].Action != CloseOnMergeClosed || first.Marked != 3 || first.SkippedSettled != 0 {
 		t.Fatalf("first sweep = %+v", first)
 	}
-	// Three claim reads plus CloseIssue's own re-read of issue 7.
-	const firstSweepIssueGets = 4
+	// One list, then only CloseIssue's own re-read of issue 7.
+	const firstSweepIssueGets = 1
 	if got := f.count("issue_get"); got != firstSweepIssueGets {
 		t.Fatalf("first sweep issue GETs = %d, want %d", got, firstSweepIssueGets)
+	}
+	if got := f.count("list_get"); got != 1 {
+		t.Fatalf("first sweep list GETs = %d, want 1", got)
 	}
 	if got := f.count("patch"); got != 1 {
 		t.Fatalf("first sweep closes = %d, want 1 (issue 7)", got)
@@ -157,19 +173,25 @@ func TestCloseOnMergeLedgerSweepSettledClaimsSkipAPI(t *testing.T) {
 	if got := f.count("issue_get"); got != firstSweepIssueGets {
 		t.Fatalf("second sweep added issue GETs: total %d, want %d", got, firstSweepIssueGets)
 	}
-	if got := f.count("pull_get"); got != 3 {
-		t.Fatalf("second sweep added PR GETs: total %d, want 3", got)
+	if got := f.count("pull_get"); got != 1 {
+		t.Fatalf("second sweep added PR GETs: total %d, want 1", got)
+	}
+	if got := f.count("list_get"); got != 1 {
+		t.Fatalf("second sweep added list GETs: total %d, want 1", got)
 	}
 
 	// Past the recheck window each claim is verified once more and re-stamped.
 	now = now.Add(DefaultCloseOnMergeRecheck)
 	third := c.CloseOnMergeLedgerSweep(context.Background(), ledger, opts)
-	if len(third.Results) != 3 || third.Marked != 3 {
+	if len(third.Results) != 0 || third.Marked != 3 {
 		t.Fatalf("third sweep = %+v, want 3 rechecked", third)
 	}
-	// Issue 7 is closed now, so the recheck is one read per claim.
-	if got := f.count("issue_get"); got != firstSweepIssueGets+3 {
-		t.Fatalf("third sweep issue GETs total = %d, want %d", got, firstSweepIssueGets+3)
+	// Issue 7 is closed now, so the recheck is one list and no per-claim read.
+	if got := f.count("issue_get"); got != firstSweepIssueGets {
+		t.Fatalf("third sweep issue GETs total = %d, want %d", got, firstSweepIssueGets)
+	}
+	if got := f.count("list_get"); got != 2 {
+		t.Fatalf("third sweep list GETs total = %d, want 2", got)
 	}
 	for _, claim := range ledger.Claims() {
 		if !claim.CloseOnMergeSettledAt.Equal(now) {
@@ -210,18 +232,21 @@ func TestCloseOnMergeLedgerSweepCustomRecheckWindow(t *testing.T) {
 		t.Fatalf("inside window = %+v, want skip", s)
 	}
 	now = now.Add(2 * time.Minute)
-	if s := c.CloseOnMergeLedgerSweep(context.Background(), ledger, opts); len(s.Results) != 1 || s.SkippedSettled != 0 {
+	if s := c.CloseOnMergeLedgerSweep(context.Background(), ledger, opts); s.Marked != 1 || s.SkippedSettled != 0 {
 		t.Fatalf("past window = %+v, want recheck", s)
 	}
-	if got := f.count("issue_get"); got != 2 {
-		t.Fatalf("issue GETs = %d, want 2", got)
+	if got := f.count("list_get"); got != 2 {
+		t.Fatalf("list GETs = %d, want 2", got)
+	}
+	if got := f.count("issue_get"); got != 0 {
+		t.Fatalf("issue GETs = %d, want 0", got)
 	}
 }
 
 func TestCloseOnMergeLedgerSweepTransientFailureDoesNotSettle(t *testing.T) {
 	defer resetPRDetailCacheForTest(nil, 0)()
 	f := newLedgerSweepFixture(t, 7)
-	f.issueStatus = http.StatusBadGateway
+	f.listStatus = http.StatusBadGateway
 	srv := f.server()
 	defer srv.Close()
 	ledger := NewClaimLedger(filepath.Join(t.TempDir(), "ledger.json"), nil)
@@ -232,15 +257,18 @@ func TestCloseOnMergeLedgerSweepTransientFailureDoesNotSettle(t *testing.T) {
 	c := newTestClient(t, srv, "o", []string{"r"})
 	opts := CloseOnMergeOptions{Identity: HiveIdentity{AppLogin: "hive[bot]"}, Now: func() time.Time { return merged.Add(time.Hour) }}
 	s := c.CloseOnMergeLedgerSweep(context.Background(), ledger, opts)
-	if len(s.Results) != 1 || s.Results[0].Reason != "issue_read_failed" || s.Marked != 0 {
-		t.Fatalf("sweep = %+v, want unsettled issue_read_failed", s)
+	if len(s.Results) != 0 || s.Marked != 0 {
+		t.Fatalf("sweep = %+v, want the repo skipped unsettled after its list failed", s)
+	}
+	if got := f.count("issue_get") + f.count("pull_get"); got != 0 {
+		t.Fatalf("per-claim reads after list failure = %d, want 0", got)
 	}
 	claim, _ := ledger.Lookup("o/r", 7)
 	if !claim.CloseOnMergeSettledAt.IsZero() {
 		t.Fatalf("transient failure stamped settled marker: %v", claim.CloseOnMergeSettledAt)
 	}
 	// The API recovers: the next sweep retries and closes.
-	f.issueStatus = 0
+	f.listStatus = 0
 	s = c.CloseOnMergeLedgerSweep(context.Background(), ledger, opts)
 	if len(s.Results) != 1 || s.Results[0].Action != CloseOnMergeClosed || s.Marked != 1 {
 		t.Fatalf("retry sweep = %+v, want closed", s)
@@ -274,9 +302,9 @@ func TestCloseOnMergeLedgerSweepMergedAfterKeepsFreshMergePrompt(t *testing.T) {
 	if s.SkippedNotFresh != 1 {
 		t.Fatalf("skipped not fresh = %d, want 1", s.SkippedNotFresh)
 	}
-	// One claim read plus CloseIssue's re-read; nothing for issue 8.
-	if got := f.count("issue_get"); got != 2 {
-		t.Fatalf("issue GETs = %d, want 2", got)
+	// Only CloseIssue's re-read of issue 7; nothing for issue 8.
+	if got := f.count("issue_get"); got != 1 {
+		t.Fatalf("issue GETs = %d, want 1", got)
 	}
 	// The full sweep still reaches the older claim.
 	opts.MergedAfter = time.Time{}
