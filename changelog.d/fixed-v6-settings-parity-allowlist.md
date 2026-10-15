@@ -1,0 +1,1 @@
+- dashboard: prune seven settings-parity allowlist entries that the Settings UI now references, unbreaking `TestSettingsDialogReferencesEveryHiveYAMLLeaf` on v6 after forward-merge #11929
