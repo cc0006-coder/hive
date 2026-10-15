@@ -14,10 +14,9 @@ import (
 )
 
 const (
-	CloseOnMergeMarker                  = "<!-- hive-close-on-merge -->"
-	closeOnMergeAwaitingMarker          = "<!-- hive-close-on-merge: awaiting-confirmation -->"
-	closeOnMergeCommentPageSize         = 100
-	closeOnMergeOpenIssueBatchThreshold = 20
+	CloseOnMergeMarker          = "<!-- hive-close-on-merge -->"
+	closeOnMergeAwaitingMarker  = "<!-- hive-close-on-merge: awaiting-confirmation -->"
+	closeOnMergeCommentPageSize = 100
 	// reopenedAfterMergeMarkerFormat marks an issue a person reopened after
 	// the given PR merged. It is PR-specific and must not contain
 	// CloseOnMergeMarker, which is matched issue-wide and would also block a
@@ -181,13 +180,6 @@ func (c *Client) CloseOnMergeLedgerSweep(ctx context.Context, ledger *ClaimLedge
 	// every pass exhausts the App quota after a restart empties the caches.
 	openIssues := map[string]map[int]*gh.Issue{}
 	openIssueListFailed := map[string]bool{}
-	eligibleByRepo := map[string]int{}
-	for _, claim := range claims {
-		if !candidate(claim) || claim.ReopenedAfterMerge() || closeOnMergeClaimSettled(claim, now, recheck) || (!opts.MergedAfter.IsZero() && closeOnMergeClaimMergedAt(claim).Before(opts.MergedAfter)) {
-			continue
-		}
-		eligibleByRepo[c.closeOnMergeRepoKey(claim.Repo)]++
-	}
 	for _, claim := range claims {
 		if !candidate(claim) {
 			continue
@@ -207,30 +199,33 @@ func (c *Client) CloseOnMergeLedgerSweep(ctx context.Context, ledger *ClaimLedge
 			sweep.SkippedNotFresh++
 			continue
 		}
-		var issue *gh.Issue
 		key := c.closeOnMergeRepoKey(claim.Repo)
-		if eligibleByRepo[key] >= closeOnMergeOpenIssueBatchThreshold {
-			if _, seen := openIssues[key]; !seen && !openIssueListFailed[key] {
-				open, err := c.closeOnMergeOpenIssues(ctx, claim.Repo)
-				if err != nil {
-					if opts.Logger != nil {
-						opts.Logger.Warn("close-on-merge: listing open issues failed", "repo", claim.Repo, "error", err)
-					}
-					openIssueListFailed[key] = true
-				} else {
-					openIssues[key] = open
-				}
-			}
+		if openIssueListFailed[key] {
+			// The repo's list failed this pass: skip it rather than fall
+			// back to per-claim reads; the next sweep retries it.
+			continue
 		}
-		if open, ok := openIssues[key]; ok {
-			if issue = open[claim.Issue]; issue == nil {
-				res := CloseOnMergeResult{Repo: claim.Repo, Issue: claim.Issue, PR: claim.PRNumber, Action: CloseOnMergeAlreadyDone, Reason: "issue_not_open"}
-				sweep.Results = append(sweep.Results, res)
-				if ledger.MarkCloseOnMergeSettled(claim.Repo, claim.Issue, claim.PRNumber, now) {
-					sweep.Marked++
+		open, seen := openIssues[key]
+		if !seen {
+			var err error
+			open, err = c.closeOnMergeOpenIssues(ctx, claim.Repo)
+			if err != nil {
+				if opts.Logger != nil {
+					opts.Logger.Warn("close-on-merge: listing open issues failed", "repo", claim.Repo, "error", err)
 				}
+				openIssueListFailed[key] = true
 				continue
 			}
+			openIssues[key] = open
+		}
+		issue := open[claim.Issue]
+		if issue == nil {
+			// Not open (or not an issue): nothing to close. Settle the claim
+			// so later passes skip it without even counting it here.
+			if ledger.MarkCloseOnMergeSettled(claim.Repo, claim.Issue, claim.PRNumber, now) {
+				sweep.Marked++
+			}
+			continue
 		}
 		pr, err := c.getPullRequestForCloseOnMerge(ctx, claim.PRRepo, claim.PRNumber)
 		if err != nil {
