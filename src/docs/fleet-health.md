@@ -382,9 +382,17 @@ same store behind `GET /api/evidence/summary`):
   level (`AutoMerge.SelfAuthoredAutoMergeAllowed`).
 - `reviewer_families` / `author_families` — model families (`claude`, `gpt`,
   …) seen on verdicts and agent-authored PRs; unknown models are omitted.
+- `hive_state` — the spoke's 24 h / 7 d hive state trends
+  ([#12339](https://github.com/hivecommons/hive/issues/12339)): per window
+  (`24h`, `7d`) `samples`, `coverage_hours`, median/p90 `queue_issues`,
+  `queue_prs` and `queue_hold`, `sla_violation_rate`, `agent_idle_ratio`,
+  `kicks_per_day` and `tokens_per_day`. Omitted when the spoke has no snapshot
+  in the last 7 days. See
+  [Hive state time series](strategy-lab.md#hive-state-time-series).
 
 The hub clamps every count (subset counts never exceed their total), caps and
-de-duplicates the family lists, and stores the result with the other per-hive
+de-duplicates the family lists, bounds `hive_state` (ratios to `[0, 1]`,
+coverage to the window, p90 never below the median), and stores the result with the other per-hive
 quadrant inputs. A beat without the block (an older spoke, a minimal upgrade
 beat, or a spoke whose evidence directory was unreadable that cycle) keeps the
 last stored summary. Reporting only: nothing here gates a merge.

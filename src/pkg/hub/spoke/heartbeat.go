@@ -24,6 +24,7 @@ import (
 
 	"github.com/hivecommons/hive/pkg/config"
 	"github.com/hivecommons/hive/pkg/fleetreport"
+	"github.com/hivecommons/hive/pkg/hivestate"
 	"github.com/hivecommons/hive/pkg/inferencehealth"
 	spokesig "github.com/hivecommons/hive/pkg/spoke"
 	"github.com/hivecommons/hive/pkg/tracing"
@@ -1155,7 +1156,9 @@ const HeartbeatEvidenceCalibrationBuckets = 6
 // FalseBlock90d counts blocking verdicts on PRs that were merged anyway;
 // Reverted14d90d counts merged PRs reverted or followed up within 14 days.
 // AutomergeSelfAuthored is AutoMerge.SelfAuthoredAutoMergeAllowed(ACMMLevel),
-// nil when the spoke has no config. The JSON shape matches hub.HeartbeatEvidence.
+// nil when the spoke has no config. HiveState is the 24 h / 7 d summary of the
+// spoke's hive state time series (#12339), nil when it has no recent sample.
+// The JSON shape matches hub.HeartbeatEvidence.
 type HeartbeatEvidence struct {
 	Verdicts90d           int                                                          `json:"verdicts_90d"`
 	FalseApprove90d       int                                                          `json:"false_approve_90d"`
@@ -1166,6 +1169,7 @@ type HeartbeatEvidence struct {
 	ReviewerFamilies      []string                                                     `json:"reviewer_families,omitempty"`
 	AuthorFamilies        []string                                                     `json:"author_families,omitempty"`
 	Calibration           [HeartbeatEvidenceCalibrationBuckets]HeartbeatEvidenceBucket `json:"calibration"`
+	HiveState             *hivestate.Trends                                            `json:"hive_state,omitempty"`
 }
 
 // HeartbeatEvidenceBucket is one calibration bucket: N verdicts, Bad of

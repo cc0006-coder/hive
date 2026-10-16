@@ -8,6 +8,7 @@ import (
 
 	"github.com/hivecommons/hive/pkg/evidence"
 	ghpkg "github.com/hivecommons/hive/pkg/github"
+	"github.com/hivecommons/hive/pkg/hivestate"
 	"github.com/hivecommons/hive/pkg/hub/spoke"
 	"github.com/hivecommons/hive/pkg/review"
 )
@@ -17,9 +18,10 @@ const evidenceHeartbeatWindow = 90 * 24 * time.Hour
 
 // EvidenceHeartbeat builds the evidence block of the hub heartbeat (#12114):
 // a 90-day summary of the review-evidence bundles behind
-// GET /api/evidence/summary plus the self-authored auto-merge posture. It is
-// read-only. It returns nil when the bundles cannot be read, so the hub keeps
-// the summary it already stored instead of seeing a false zero.
+// GET /api/evidence/summary, the self-authored auto-merge posture, and the
+// 24 h / 7 d hive state trends (#12339). It is read-only. It returns nil when
+// the bundles cannot be read, so the hub keeps the summary it already stored
+// instead of seeing a false zero.
 func (s *Server) EvidenceHeartbeat() *spoke.HeartbeatEvidence {
 	bundles, _, err := loadEvidenceBundles(ghpkg.ReviewEvidenceRoot)
 	if err != nil {
@@ -31,7 +33,18 @@ func (s *Server) EvidenceHeartbeat() *spoke.HeartbeatEvidence {
 		v := cfg.AutoMerge.SelfAuthoredAutoMergeAllowed(cfg.ACMMLevel)
 		selfMerge = &v
 	}
-	return buildHeartbeatEvidence(bundles, time.Now().UTC(), selfMerge)
+	out := buildHeartbeatEvidence(bundles, time.Now().UTC(), selfMerge)
+	out.HiveState = s.hiveStateTrends()
+	return out
+}
+
+// hiveStateTrends is the 24 h / 7 d summary of the hive state time series
+// (#12339); nil when no series is configured or no sample is recent.
+func (s *Server) hiveStateTrends() *hivestate.Trends {
+	if s == nil || s.deps == nil {
+		return nil
+	}
+	return s.deps.Nous.HiveState().Trends()
 }
 
 // buildHeartbeatEvidence aggregates the newest bundle per PR created within
