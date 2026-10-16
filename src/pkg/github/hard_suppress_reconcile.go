@@ -24,10 +24,16 @@ import (
 //     SHA-hold notice (<!-- hive:sha-hold -->) was posted with it — so a hold
 //     another subsystem applied through the same App on an operator's behalf
 //     is not mistaken for the SHA sweep's; and
-//   - the reason lapsed: a pull request cross-referencing the issue merged
-//     after the label was applied.
+//   - the reason lapsed: a hive-authored pull request (App bot or the
+//     configured AI author) in one of the configured repos that
+//     cross-references the issue merged after the label was applied. A
+//     merged PR from any other author or repo — anyone can mention the
+//     issue URL from a public fork — never counts.
 //
-// A label a human applied (or re-applied) is never touched.
+// A label a human applied (or re-applied) is never touched. EnforceSHAHold
+// honours the lift note the reconcile leaves (hardSuppressLiftedMarker) so
+// its hard path does not re-park an untrusted reporter's issue on the next
+// cycle; see shaHoldLiftedByReconcile.
 
 // DefaultHardSuppressReconcileLabels are the hard-suppress labels the
 // reconcile considers.
@@ -41,9 +47,44 @@ const hardSuppressReconcileMaxPages = 3
 
 // HardSuppressReconcileConfig scopes one reconcile pass.
 type HardSuppressReconcileConfig struct {
+	// Repos are the configured repositories; only a merged PR in one of them
+	// counts as the reason lapsing.
 	Repos []string
+	// AIAuthor is the configured AI author login; a merged PR must be
+	// authored by it or by the App bot to count.
+	AIAuthor string
 	// Labels overrides DefaultHardSuppressReconcileLabels.
 	Labels []string
+}
+
+// hardSuppressPRScope is the author/repo allowlist a merged PR must satisfy.
+type hardSuppressPRScope struct {
+	repos   map[string]struct{}
+	authors map[string]struct{}
+}
+
+func (c *Client) hardSuppressScope(cfg HardSuppressReconcileConfig) hardSuppressPRScope {
+	scope := hardSuppressPRScope{repos: map[string]struct{}{}, authors: map[string]struct{}{}}
+	for _, repoRef := range cfg.Repos {
+		owner, repo := c.splitRepo(repoRef)
+		if owner != "" && repo != "" {
+			scope.repos[strings.ToLower(owner+"/"+repo)] = struct{}{}
+		}
+	}
+	for _, author := range []string{c.appBotLogin, cfg.AIAuthor} {
+		if author = strings.TrimSpace(author); author != "" {
+			scope.authors[strings.ToLower(author)] = struct{}{}
+		}
+	}
+	return scope
+}
+
+func (s hardSuppressPRScope) allows(repoFullName, author string) bool {
+	if _, ok := s.repos[strings.ToLower(strings.TrimSpace(repoFullName))]; !ok {
+		return false
+	}
+	_, ok := s.authors[strings.ToLower(strings.TrimSpace(author))]
+	return ok
 }
 
 // HardSuppressReconcileResult reports one reconcile pass.
@@ -67,6 +108,7 @@ func (c *Client) ReconcileHiveHardSuppress(ctx context.Context, cfg HardSuppress
 	if len(labels) == 0 {
 		labels = DefaultHardSuppressReconcileLabels
 	}
+	scope := c.hardSuppressScope(cfg)
 	var firstErr error
 	for _, repoRef := range cfg.Repos {
 		owner, repo := c.splitRepo(repoRef)
@@ -89,7 +131,7 @@ func (c *Client) ReconcileHiveHardSuppress(ctx context.Context, cfg HardSuppress
 				if issue == nil || issue.IsPullRequest() {
 					continue
 				}
-				c.reconcileHardSuppressIssue(ctx, owner, repo, issue.GetNumber(), label, result)
+				c.reconcileHardSuppressIssue(ctx, owner, repo, issue.GetNumber(), label, scope, result)
 			}
 		}
 	}
@@ -117,7 +159,7 @@ func (c *Client) listOpenIssuesWithLabel(ctx context.Context, owner, repo, label
 	return out, nil
 }
 
-func (c *Client) reconcileHardSuppressIssue(ctx context.Context, owner, repo string, number int, label string, result *HardSuppressReconcileResult) {
+func (c *Client) reconcileHardSuppressIssue(ctx context.Context, owner, repo string, number int, label string, scope hardSuppressPRScope, result *HardSuppressReconcileResult) {
 	byApp, labeledAt, err := c.latestLabelEventByApp(ctx, owner, repo, number, label)
 	if err != nil {
 		c.logger.Warn("hard-suppress reconcile: could not read label events", "repo", repo, "issue", number, "label", label, "error", err)
@@ -135,7 +177,7 @@ func (c *Client) reconcileHardSuppressIssue(ctx context.Context, owner, repo str
 			return
 		}
 	}
-	mergedPR, err := c.prMergedSinceForIssue(ctx, owner, repo, number, labeledAt.Time)
+	mergedPR, err := c.prMergedSinceForIssue(ctx, owner, repo, number, labeledAt.Time, scope)
 	if err != nil {
 		c.logger.Warn("hard-suppress reconcile: could not read timeline", "repo", repo, "issue", number, "label", label, "error", err)
 		result.Skipped++
@@ -160,8 +202,12 @@ func (c *Client) reconcileHardSuppressIssue(ctx context.Context, owner, repo str
 }
 
 // prMergedSinceForIssue returns the first pull request cross-referencing the
-// issue that merged after since ("owner/repo#N"), or "" when none did.
-func (c *Client) prMergedSinceForIssue(ctx context.Context, owner, repo string, number int, since time.Time) (string, error) {
+// issue that merged after since ("owner/repo#N", or "#N" for the issue's own
+// repo), or "" when none did. Only a PR whose repo and author pass scope
+// counts: GitHub records a cross-reference whenever any public PR mentions
+// the issue URL, so without the allowlist an outside account could lift a
+// hive-applied park by merging a PR in its own fork.
+func (c *Client) prMergedSinceForIssue(ctx context.Context, owner, repo string, number int, since time.Time, scope hardSuppressPRScope) (string, error) {
 	opts := &gh.ListOptions{PerPage: 100}
 	for {
 		events, resp, err := c.client.Issues.ListIssueTimeline(ctx, owner, repo, number, opts)
@@ -180,8 +226,12 @@ func (c *Client) prMergedSinceForIssue(ctx context.Context, owner, repo string, 
 			if mergedAt.IsZero() || !mergedAt.After(since) {
 				continue
 			}
+			full := crossRefRepoFullName(src.Issue)
+			if !scope.allows(full, safeGetLogin(src.Issue.GetUser())) {
+				continue
+			}
 			ref := fmt.Sprintf("#%d", src.Issue.GetNumber())
-			if full := src.Issue.GetRepository().GetFullName(); full != "" && !strings.EqualFold(full, owner+"/"+repo) {
+			if !strings.EqualFold(full, owner+"/"+repo) {
 				ref = full + ref
 			}
 			return ref, nil
@@ -191,6 +241,21 @@ func (c *Client) prMergedSinceForIssue(ctx context.Context, owner, repo string, 
 		}
 		opts.Page = resp.NextPage
 	}
+}
+
+// crossRefRepoFullName returns "owner/repo" for a timeline cross-reference
+// source issue, from its repository object or, failing that, its
+// repository_url. "" when neither is present, which fails the scope check.
+func crossRefRepoFullName(issue *gh.Issue) string {
+	if full := issue.GetRepository().GetFullName(); full != "" {
+		return full
+	}
+	const marker = "/repos/"
+	u := issue.GetRepositoryURL()
+	if i := strings.Index(u, marker); i >= 0 {
+		return strings.Trim(u[i+len(marker):], "/")
+	}
+	return ""
 }
 
 func hardSuppressLiftedNote(label string, labeledAt time.Time, mergedPR string) string {

@@ -3386,6 +3386,15 @@ func (c *Client) EnforceSHAHold(ctx context.Context, cfg SHAHoldConfig) (*SHAHol
 			result.Unheld++
 			c.logger.Info("SHA-UNHOLD", "repo", repo, "issue", issue.GetNumber(), "author", author)
 		case !hasSHA && !held:
+			// The hard-suppress reconcile lifts this sweep's hold once a hive
+			// PR referencing the issue merged (hivecommons/hive#12002). Its
+			// lift note outranks the missing SHA; re-holding here would flap
+			// the label and duplicate the notice every cycle.
+			if c.shaHoldLiftedByReconcile(ctx, owner, repo, issue.GetNumber()) {
+				c.logger.Info("SHA-HOLD skipped: hard-suppress reconcile lifted the hold", "repo", repo, "issue", issue.GetNumber(), "author", author)
+				result.Skipped++
+				continue
+			}
 			c.hold(ctx, owner, repo, issue.GetNumber())
 			result.Held++
 			c.logger.Info("SHA-HOLD", "repo", repo, "issue", issue.GetNumber(), "author", author)
@@ -3521,6 +3530,37 @@ func (c *Client) shaHoldIsOwn(ctx context.Context, owner, repo string, number in
 		}
 	}
 	return false, nil
+}
+
+// shaHoldLiftedByReconcile reports whether the newest App-authored
+// hard-suppress lift note (hardSuppressLiftedMarker) on the issue is newer
+// than every App-authored SHA-hold notice: the reconcile lifted this sweep's
+// hold and nothing has re-held since. A listing error fails closed (false)
+// so the legacy behaviour is kept when the comments cannot be read.
+func (c *Client) shaHoldLiftedByReconcile(ctx context.Context, owner, repo string, number int) bool {
+	comments, err := c.listIssueComments(ctx, owner, repo, number)
+	if err != nil {
+		c.logger.Warn("failed to list comments for hard-suppress lift check", "repo", repo, "issue", number, "error", err)
+		return false
+	}
+	var lastLift, lastNotice time.Time
+	for _, comment := range comments {
+		if comment == nil || !c.isTrustedAppBotCommentAuthor(comment) {
+			continue
+		}
+		at := comment.GetCreatedAt().Time
+		switch {
+		case strings.Contains(comment.GetBody(), hardSuppressLiftedMarker):
+			if at.After(lastLift) {
+				lastLift = at
+			}
+		case isSHAHoldNotice(comment.GetBody()):
+			if at.After(lastNotice) {
+				lastNotice = at
+			}
+		}
+	}
+	return !lastLift.IsZero() && lastLift.After(lastNotice)
 }
 
 func isSHAHoldNotice(body string) bool {

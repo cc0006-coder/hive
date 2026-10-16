@@ -51,7 +51,7 @@ type IssuesConfig struct {
 	// legacy hard hold for every reporter.
 	SHAHoldTrustedLabel *string `yaml:"sha_hold_trusted_label,omitempty" json:"sha_hold_trusted_label,omitempty"`
 	// LiftHiveHardSuppress enables the reconcile that lifts a `hold`/`blocked`
-	// label hive itself applied once a PR referencing the issue has merged
+	// label hive itself applied once a hive-authored PR referencing the issue has merged
 	// since. Default true; a human-applied label is never lifted.
 	LiftHiveHardSuppress *bool `yaml:"lift_hive_hard_suppress,omitempty" json:"lift_hive_hard_suppress,omitempty"`
 	// HardSuppressReconcileInterval is the reconcile cadence; see
