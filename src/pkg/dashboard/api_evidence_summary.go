@@ -44,7 +44,13 @@ type EvidenceSummary struct {
 	// WriteCounters is the proxy's attempted-vs-blocked agent write totals per
 	// intent tier (#12069); omitted when the counter file is absent or unreadable.
 	WriteCounters map[string]EvidenceWriteCount `json:"write_counters,omitempty"`
-	Missing       EvidenceMissing               `json:"missing"`
+	// IntentCounters is the intent gate's evaluated-vs-would-block totals per
+	// tier (#12362), same shape as WriteCounters: Attempted is evaluations,
+	// Blocked is the subset BlocksMerge(true) would have withheld, whether or
+	// not intent.enforce was on. Omitted when the counter file is absent or
+	// unreadable. Record-only; it never feeds back into eligibility.
+	IntentCounters map[string]EvidenceWriteCount `json:"intent_counters,omitempty"`
+	Missing        EvidenceMissing               `json:"missing"`
 }
 
 // EvidenceWriteCount is one tier's attempted and proxy-blocked write counts.
@@ -218,6 +224,7 @@ func (s *Server) handleEvidenceSummary(w http.ResponseWriter, r *http.Request) {
 	resp := buildEvidenceSummary(bundles, now, hours, repo, kind)
 	resp.Missing.RecordsUnreadable = unreadable
 	resp.WriteCounters = loadEvidenceWriteCounters(writeCountersPath)
+	resp.IntentCounters = loadEvidenceWriteCounters(intentCountersPath)
 
 	days := (hours + 23) / 24
 	if days < 1 || days > reviewerAccuracyMaxWindowDays {
