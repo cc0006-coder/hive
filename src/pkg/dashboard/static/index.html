@@ -1585,6 +1585,11 @@
     .ev-legend i.sr { background:var(--red); }
     .ev-legend i.so { background:var(--muted); opacity:.5; }
     .ev-legend i.unknown { background:var(--muted); opacity:.5; }
+    .ev-svg .ev-bar.wa { fill:var(--blue); }
+    .ev-svg .ev-bar.wb { fill:var(--red); }
+    .ev-legend i.wa { background:var(--blue); }
+    .ev-legend i.wb { background:var(--red); }
+    .ev-svg.ev-spark { max-width:480px; }
     .ev-note { margin-top:var(--sp-2); font-size:var(--fs-2xs); color:var(--muted); }
     .ev-empty { margin-top:var(--sp-2); font-size:var(--fs-xs); color:var(--muted); }
     .prt-trend-head { display:flex; justify-content:space-between; gap:var(--sp-2); align-items:center; margin-bottom:var(--sp-2); }
@@ -22021,8 +22026,9 @@ function burnAreaChart() {
 
     // Evidence sub-panel (#12064, RFC #12062): read-only reporting from
     // /api/evidence/summary for the Throughput window and repo selector.
-    // Panels 2 (reviewer calibration), 3 (reviewer accuracy × model) and 8
-    // (shadow gates). UI only; nothing here changes merge behaviour.
+    // Panels 2 (reviewer calibration), 3 (reviewer accuracy × model), 4
+    // (boundary enforcement) and 8 (shadow gates). UI only; nothing here
+    // changes merge behaviour.
     const EV_PALETTE_SIZE = 6;
     let evLast = null;
 
@@ -22133,6 +22139,55 @@ function burnAreaChart() {
       return `<svg class="ev-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="Shadow gates: PRs the review gate or intent verification would have stopped or passed, by actual outcome">${body}</svg><div class="ev-legend"><span><i class="sm"></i>merged</span><span><i class="sr"></i>merged, later reverted</span><span><i class="so"></i>still open</span></div>`;
     }
 
+    // Panel 4 (#12368): boundary enforcement — the N behind "nothing bad
+    // happened". Attempted vs blocked agent writes per intent tier from the
+    // proxy's durable counter file, plus sentinel hits per ISO week from the
+    // bundles. Counters are proxy-side observations; nothing here gates.
+    const EV_WRITE_TIERS = ['ADVISORY', 'ISSUES_ONLY', 'ISSUES_AND_PRS', 'ISSUES_PRS_MERGE'];
+    const EV_TOP_REASONS = 3;
+    function evWriteCountersSvg(counters) {
+      if (!counters || typeof counters !== 'object') return '<div class="ev-empty">— no write counters yet (the proxy has not recorded an agent write, or the counter file is absent)</div>';
+      const tiers = EV_WRITE_TIERS.concat(Object.keys(counters).filter((k) => !EV_WRITE_TIERS.includes(k)).sort());
+      const rows = tiers.map((tier) => {
+        const c = counters[tier] || {};
+        const reasons = Object.entries(c.blocked_by_reason || {}).map(([k, v]) => [k, Number(v) || 0]).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+        const idx = EV_WRITE_TIERS.indexOf(tier);
+        return { tier, label: idx >= 0 ? `${idx} · ${tier}` : tier, attempted: Number(c.attempted) || 0, blocked: Number(c.blocked) || 0, reasons };
+      }).filter((r) => r.attempted > 0 || r.blocked > 0);
+      if (!rows.length) return '<div class="ev-empty">— no agent writes recorded by the proxy yet</div>';
+      const w = 320, label = 118, valW = 56, barH = 7, gap = 2, rowH = 2 * (barH + gap) + 6, t = 4;
+      const barW = w - label - valW;
+      const h = t + rows.length * rowH;
+      const maxN = Math.max(1, ...rows.map((r) => r.attempted));
+      const pct = (num, den) => { const v = evRate(num, den); return v == null ? '—' : Math.round(v * 100) + '%'; };
+      const body = rows.map((row, i) => {
+        const y0 = t + i * rowH;
+        const top = row.reasons.slice(0, EV_TOP_REASONS).map(([k, v]) => `${k} ${v}`).join(', ');
+        const tip = escapeHtml(`tier ${row.label}: attempted ${row.attempted} · blocked ${row.blocked} (${pct(row.blocked, row.attempted)})${top ? ` · top reasons: ${top}` : ''}`);
+        const bar = (cls, v, k, txt) => {
+          const yy = y0 + k * (barH + gap);
+          return `<rect class="ev-bar ${cls}" x="${label}" y="${yy}" width="${((v / maxN) * barW).toFixed(1)}" height="${barH}"><title>${tip}</title></rect><text x="${w - 2}" y="${yy + barH}" text-anchor="end">${txt}</text>`;
+        };
+        return `<g><text x="0" y="${y0 + 13}">${escapeHtml(row.label.slice(0, 22))}<title>${tip}</title></text>${bar('wa', row.attempted, 0, row.attempted)}${bar('wb', row.blocked, 1, `${row.blocked} · ${pct(row.blocked, row.attempted)}`)}</g>`;
+      }).join('');
+      return `<svg class="ev-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="Boundary enforcement: attempted versus proxy-blocked agent writes per intent tier">${body}</svg><div class="ev-legend"><span><i class="wa"></i>attempted</span><span><i class="wb"></i>blocked by proxy</span><span>hover a row for the top block reasons</span></div>`;
+    }
+
+    function evSentinelSparkline(series) {
+      const weeks = (series && Array.isArray(series.weeks) ? series.weeks : []).map((wk) => ({ week: String((wk && wk.week) || ''), hits: Number(wk && wk.hits) || 0 }));
+      if (!weeks.length) return '<div class="ev-empty">— no sentinel hits recorded in this window</div>';
+      const w = 320, h = 44, l = 4, r = 4, t = 6, b = 14;
+      const pw = w - l - r, ph = h - t - b;
+      const maxHits = Math.max(1, ...weeks.map((wk) => wk.hits));
+      const x = (i) => l + (weeks.length > 1 ? (i * pw) / (weeks.length - 1) : pw / 2);
+      const y = (v) => t + ph - (v / maxHits) * ph;
+      const pts = weeks.map((wk, i) => `${x(i).toFixed(1)},${y(wk.hits).toFixed(1)}`).join(' ');
+      const dots = weeks.map((wk, i) => `<circle class="ev-pt" cx="${x(i).toFixed(1)}" cy="${y(wk.hits).toFixed(1)}" r="2.5"><title>${escapeHtml(`week of ${wk.week}: ${wk.hits} sentinel hit(s)`)}</title></circle>`).join('');
+      const first = weeks[0].week, last = weeks[weeks.length - 1].week;
+      const total = weeks.reduce((sum, wk) => sum + wk.hits, 0);
+      return `<svg class="ev-svg ev-spark" viewBox="0 0 ${w} ${h}" role="img" aria-label="Sentinel hits per ISO week"><g class="ev-c3">${weeks.length > 1 ? `<polyline class="ev-line" points="${pts}"/>` : ''}${dots}</g><text x="${l}" y="${h - 3}">${escapeHtml(first)}</text><text x="${w - r}" y="${h - 3}" text-anchor="end">${escapeHtml(last)}</text></svg><div class="ev-legend"><span class="ev-c3"><i class="dot"></i>sentinel hits per ISO week (UTC Monday) · ${total} in ${weeks.length} week(s) · peak ${maxHits}</span></div>`;
+    }
+
     function renderEvidenceSummary(dto) {
       const card = document.getElementById('evidence-card');
       if (!card) return;
@@ -22143,6 +22198,9 @@ function burnAreaChart() {
       const modelN = models.reduce((sum, m) => sum + (Number(m && m.n) || 0), 0);
       const unknown = Number((dto.missing || {}).verdicts_model_unknown) || 0;
       const shadow = dto.shadow_gate || {};
+      const counters = dto.write_counters && typeof dto.write_counters === 'object' ? dto.write_counters : null;
+      const attemptedN = counters ? Object.keys(counters).reduce((sum, k) => sum + (Number(counters[k] && counters[k].attempted) || 0), 0) : 0;
+      const sentinel = dto.sentinel_hits_per_week || {};
       const windowName = PRT_WINDOWS.find(([h]) => h === prtHours);
       const scope = (dto.all_time ? 'all time' : `last ${windowName ? windowName[1] : (Number(dto.hours) || 0) + 'h'}`) + (dto.repo ? ` · ${dto.repo}` : '');
       card.innerHTML = `<div class="prt-head"><div class="lc-window">🔬 Evidence · ${escapeHtml(scope)}</div><span class="ev-n" title="PRs (latest evidence bundle per PR) in this window">n=${Number(dto.n) || 0} PRs</span></div>`
@@ -22150,6 +22208,8 @@ function burnAreaChart() {
           'Bad outcomes such as reverts are not recorded in evidence bundles yet, so only merge and block rates are plotted. Merged is not the same as correct, and a PR that is still open counts as not merged.')
         + evPanel('accuracy-by-model', 'Reviewer accuracy × model family', modelN, evAccuracySvg(models),
           `Outcome is merged vs not merged, not ground truth: a block that was later fixed and merged counts as a false block, and an approval on a still-open PR counts as a false approve.${unknown ? ` ${unknown} verdict(s) had no recorded reviewer model and are grouped as unknown.` : ''}`)
+        + evPanel('boundary-enforcement', 'Boundary enforcement', attemptedN, evWriteCountersSvg(counters) + evSentinelSparkline(sentinel),
+          'Write counters are proxy-side observations of agent GitHub writes since the counter file was created (all-time totals, reset only with the weekly file; they do not follow the Throughput window), so direct writes that bypass the proxy are invisible here. Would-block counts from intent verification are not included in these bars; only writes the proxy actually blocked are. Sentinel hits come from evidence bundles in the window. Blocked is not the same as harmful.')
         + evPanel('shadow-gates', 'Shadow gates', shadow.n, evShadowGateSvg(shadow),
           'Shadow mode only records; no merge was held or blocked. Closed-without-merge is not recorded in bundles, so a closed PR counts as still open, and a revert only shows once the reverting PR is linked. Merged is not the same as correct.');
     }

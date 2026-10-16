@@ -125,7 +125,7 @@ func TestLoadEvidenceWriteCounters(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := loadEvidenceWriteCounters(good)
-	if got["observe"] != (EvidenceWriteCount{Attempted: 5, Blocked: 2}) {
+	if o := got["observe"]; o.Attempted != 5 || o.Blocked != 2 || o.BlockedByReason["x"] != 2 {
 		t.Errorf("got %+v", got)
 	}
 	bad := filepath.Join(dir, "bad.json")
