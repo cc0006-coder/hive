@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,7 +17,6 @@ import (
 	"github.com/hivecommons/hive/pkg/escalation"
 	"github.com/hivecommons/hive/pkg/github"
 	"github.com/hivecommons/hive/pkg/review"
-	"github.com/hivecommons/hive/pkg/review/pipeline"
 )
 
 // The "your turn" decision (hivecommons/hive#11507, part A #11565): for every
@@ -207,18 +205,8 @@ type ownershipEnv struct {
 	// reviewVerdicts are the review swarm's verdict artifact entries
 	// (review.LoadArtifact), the record /api/review/pipeline reads.
 	reviewVerdicts []review.Aggregate
-}
-
-// reviewRequiresHumanOnHead reports whether the review swarm's verdict on the
-// PR's current head asks for a human decision, read the way the review
-// pipeline reads it so its human_hold stage and this decision agree
-// (hivecommons/hive#12329). A verdict on an older head does not count.
-func (e ownershipEnv) reviewRequiresHumanOnHead(pr github.PullRequest) bool {
-	if len(e.reviewVerdicts) == 0 {
-		return false
-	}
-	current, _ := pipeline.HeadVerdict(e.reviewVerdicts, github.ReviewQueueEntry{Repo: pr.Repo, Number: pr.Number, HeadSHA: pr.HeadSHA})
-	return pipeline.RequiresHuman(current)
+	// reviewSwarm is the rest of what the review pipeline reads.
+	reviewSwarm reviewSwarmState
 }
 
 func (e ownershipEnv) laneCanOpenPRFor(lane, repo string) bool {
@@ -570,10 +558,10 @@ func decidePROwnership(pr github.PullRequest, held bool, env ownershipEnv) Owner
 		}
 		withinAdjudicatorWait = true
 	}
-	// A PR not written by Hive whose current-head review verdict requires a
-	// human: no label records it unless review.human_decision_label is set.
-	if !hive && env.reviewRequiresHumanOnHead(pr) {
-		return yourTurn(OwnershipReasonReviewRequiresHuman, "Hive's review needs a human decision")
+	// A PR the review pipeline holds for a person, for any author: no label
+	// records it unless review.human_decision_label is set (#12329, #12377).
+	if o, ok := env.reviewHoldOwnership(pr, withinAdjudicatorWait); ok {
+		return o
 	}
 	// (10) otherwise not your turn; the safety net covers non-draft, unheld
 	// hive PRs at L3 and above that no lane has claimed.
@@ -959,11 +947,7 @@ func recordEscalationFirstSeen(repos []FrontendRepo, now time.Time) func(repo st
 func applyOwnershipDecisions(cfg *config.Config, repos []FrontendRepo, agentStatuses map[string]*agent.AgentProcess, currentMode string, now time.Time, hub *ContributeWSHub) {
 	env := newOwnershipEnv(cfg, agentStatuses, currentMode, now, hub)
 	env.routeLane = classify.KeywordLane
-	if artifact, err := review.LoadArtifact(""); err == nil {
-		env.reviewVerdicts = artifact.Items
-	} else if !errors.Is(err, os.ErrNotExist) {
-		slog.Warn("ownership: review verdicts unreadable", "error", err)
-	}
+	env.loadReviewSwarm()
 	if env.hiveLevel >= ownershipAdjudicatorMinLevel {
 		env.escalatedAt = recordEscalationFirstSeen(repos, now)
 	}

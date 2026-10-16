@@ -2420,6 +2420,7 @@ func (b *boot) bootAgentsWith(deps bootAgentsDeps) {
 		ContributorLanePolicy:   contributorLanePolicyFunc(b.cfg),
 		ContributorLaneVerdict:  contributorLaneVerdictFunc(b.cfg, b.logger),
 		ContributorRegistryTier: contributorRegistryTierFunc(),
+		ReviewVerdictHold:       reviewVerdictHoldFunc(b.logger),
 		SentinelLabel:           func() string { return b.cfg.Sentinel.LabelOrDefault() },
 	}
 
@@ -9112,6 +9113,7 @@ func runAutoMergeSweepIfDue(ctx context.Context, ghClient *github.Client, cfg *c
 		ContributorLanePolicy:   contributorLanePolicyFunc(cfg),
 		ContributorLaneVerdict:  contributorLaneVerdictFunc(cfg, logger),
 		ContributorRegistryTier: contributorRegistryTierFunc(),
+		ReviewVerdictHold:       reviewVerdictHoldFunc(logger),
 	}
 	if cfg != nil {
 		opts.SentinelLabel = func() string { return cfg.Sentinel.LabelOrDefault() }
