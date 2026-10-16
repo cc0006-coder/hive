@@ -502,8 +502,8 @@ func TestOwnershipSafetyNet11565(t *testing.T) {
 }
 
 func TestOwnershipFixedSets11565(t *testing.T) {
-	if len(ownershipReasonVerbs) != 21 {
-		t.Fatalf("reason codes = %d, want the 20 of #11507 and review_requires_human (#12329)", len(ownershipReasonVerbs))
+	if len(ownershipReasonVerbs) != 25 {
+		t.Fatalf("reason codes = %d, want the 20 of #11507, review_requires_human (#12329), blocked_unexplained (#12376) and the three PR gates of #12378", len(ownershipReasonVerbs))
 	}
 	verbs := map[string]bool{}
 	for _, verb := range ownershipVerbOrder {
