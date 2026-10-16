@@ -47,7 +47,10 @@ type EvidenceSummary struct {
 	// ClaimVsVerdict is panel 5 (#12365): per ISO week, agent-authored PRs
 	// whose author said "done" versus what CI and the swarm said.
 	ClaimVsVerdict []EvidenceClaimWeek `json:"claim_vs_verdict"`
-	Missing        EvidenceMissing     `json:"missing"`
+	// WorkBalance is panel 6 (#12366): per ISO week, audited issues opened by
+	// actor kind against issues closed, over the same window and repo.
+	WorkBalance []EvidenceWorkBalanceWeek `json:"work_balance"`
+	Missing     EvidenceMissing           `json:"missing"`
 }
 
 // EvidenceClaimWeek is one ISO week of agent-authored PRs (latest bundle per
@@ -223,6 +226,13 @@ type EvidenceMissing struct {
 	RecordsEmptyCI       int  `json:"records_empty_ci"`
 	RecordsUnreadable    int  `json:"records_unreadable"`
 	ReviewerAccuracy     bool `json:"reviewer_accuracy_unavailable"`
+	// IssuesHumanOpensUnobserved is always true today: the audit log only
+	// records hive-mediated issue writes, so issues humans or third-party bots
+	// open directly on GitHub never reach work_balance.
+	IssuesHumanOpensUnobserved bool `json:"issues_human_opens_unobserved"`
+	// ThrottleWindows is always true today: this hive reports no governor
+	// issue-creation throttle windows, so work_balance carries no shading.
+	ThrottleWindows bool `json:"throttle_windows_unavailable"`
 }
 
 // handleEvidenceSummary serves GET /api/evidence/summary?hours=&repo=&author_kind=.
@@ -261,6 +271,7 @@ func (s *Server) handleEvidenceSummary(w http.ResponseWriter, r *http.Request) {
 	resp := buildEvidenceSummary(bundles, now, hours, repo, kind)
 	resp.Missing.RecordsUnreadable = unreadable
 	resp.WriteCounters = loadEvidenceWriteCounters(writeCountersPath)
+	resp.WorkBalance = buildEvidenceWorkBalance(evidenceWorkBalanceEntries(s.audit), now, hours, repo)
 
 	days := (hours + 23) / 24
 	if days < 1 || days > reviewerAccuracyMaxWindowDays {
@@ -319,6 +330,8 @@ func buildEvidenceSummary(bundles []*evidence.Bundle, now time.Time, hours int, 
 		ReviewerModels:  []EvidenceModelAccuracy{},
 		SentinelPerWeek: EvidenceSentinelSeries{Weeks: []EvidenceSentinelWeek{}},
 		ClaimVsVerdict:  []EvidenceClaimWeek{},
+		WorkBalance:     []EvidenceWorkBalanceWeek{},
+		Missing:         EvidenceMissing{IssuesHumanOpensUnobserved: true, ThrottleWindows: true},
 	}
 	for _, k := range []string{evidence.AuthorHuman, evidence.AuthorAgent, evidence.AuthorBot} {
 		resp.Outcomes[k] = EvidenceOutcomes{}

@@ -68,6 +68,15 @@ func TestEvidenceCardInThroughputSection(t *testing.T) {
 		"records_empty_ci",
 		"Only agent-authored PRs",
 		".ev-svg .ev-bar.cv-both",
+		"dto.work_balance",
+		"evPanel('work-balance', 'Work balance', balanceN, evWorkBalanceSvg(balance),",
+		"no audited issue opens or closes in this window",
+		"[['human', 'wb-human', 'opened by humans'], ['agent', 'wb-agent', 'opened by agents'], ['bot', 'wb-bot', 'opened by bots']]",
+		"row.throttled ?",
+		"throttle_windows_unavailable",
+		"Throttle windows not reported by this hive",
+		"Issues only, from this hive's audit log",
+		".ev-svg .ev-bar.wb-throttle",
 	} {
 		if !strings.Contains(html, snippet) {
 			t.Errorf("Evidence card missing snippet %q", snippet)
@@ -95,6 +104,7 @@ func TestEvidenceCardUIHasNoUndefinedCallees(t *testing.T) {
 		"evAccuracySvg",
 		"evShadowGateSvg",
 		"evClaimVsVerdictSvg",
+		"evWorkBalanceSvg",
 		"escapeHtml",
 	} {
 		decl := regexp.MustCompile(`(?m)^\s*(async\s+)?function\s+` + fn + `\s*\(`)
