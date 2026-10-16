@@ -579,6 +579,11 @@ func (c *Client) closeIssueForMergedPRClaimWithIssue(ctx context.Context, issueR
 		res.Action, res.Reason = CloseOnMergeAwaiting, "needs_confirmation_or_human"
 		return res
 	}
+	if cov := c.closeOnMergeCoverage(ctx, prRepo, issueRepo, issueNumber, pr, issue, opts); cov.partial() {
+		c.markPartiallyAddressed(ctx, issueRepo, issueNumber, pr.GetNumber(), issue, cov, opts)
+		res.Action, res.Reason = CloseOnMergeSkipped, "partially_addressed"
+		return res
+	}
 	if _, _, err := c.client.Issues.CreateComment(WithRESTCaller(ctx, "hive:close_on_merge"), owner, repoName, issueNumber, &gh.IssueComment{Body: gh.Ptr(closeOnMergeCloseComment(pr))}); err != nil {
 		res.Action, res.Reason = CloseOnMergeNoop, "close_comment_failed"
 		return res
@@ -774,7 +779,7 @@ func closeOnMergeNeedsConfirmation(issue *gh.Issue) bool {
 	for _, l := range issue.Labels {
 		name := strings.ToLower(strings.TrimSpace(l.GetName()))
 		switch name {
-		case "needs-reporter-confirmation", "epic", "needs-human":
+		case "needs-reporter-confirmation", "epic", "needs-human", "needs-decision", "needs-direction":
 			return true
 		}
 	}
