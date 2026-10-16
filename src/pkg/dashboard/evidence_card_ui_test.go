@@ -103,3 +103,37 @@ func TestEvidenceCardUIHasNoUndefinedCallees(t *testing.T) {
 		}
 	}
 }
+
+// TestEvidenceChartsUseNativeWidth guards #12410: rendering a 320-unit
+// viewBox at 640px also doubles the font-token-sized SVG labels.
+func TestEvidenceChartsUseNativeWidth(t *testing.T) {
+	html := indexHTML(t)
+	for _, snippet := range []string{
+		"const EV_SVG_W = 320;",
+		".ev-svg { display:block; width:320px; max-width:100%; height:auto;",
+		".ev-svg text { fill:var(--muted); font-size:var(--fs-2xs); }",
+	} {
+		if !strings.Contains(html, snippet) {
+			t.Errorf("Evidence chart sizing missing %q", snippet)
+		}
+	}
+	for _, name := range []string{
+		"evOutcomesSvg",
+		"evCalibrationSvg",
+		"evAccuracySvg",
+		"evShadowGateSvg",
+		"evClaimVsVerdictSvg",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := extractJSFunction(t, html, name)
+			for _, snippet := range []string{
+				"const w = EV_SVG_W,",
+				`<svg class="ev-svg" viewBox="0 0 ${w} ${h}"`,
+			} {
+				if !strings.Contains(body, snippet) {
+					t.Errorf("chart must use the native CSS width: missing %q", snippet)
+				}
+			}
+		})
+	}
+}

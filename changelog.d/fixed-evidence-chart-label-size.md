@@ -1,0 +1,1 @@
+- Fix oversized Evidence chart labels by matching the SVG display width to its viewBox, while retaining responsive shrinking on narrow screens (#12410).
